@@ -38,6 +38,7 @@ Issues = "https://github.com/jasoisjaso/swrfid/issues"
 
 [project.scripts]
 swrfid = "swrfid.cli:main"
+swrfid-gui = "swrfid.gui:main"
 
 [tool.setuptools.packages.find]
 include = ["swrfid*"]

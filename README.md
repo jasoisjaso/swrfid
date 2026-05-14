@@ -115,7 +115,36 @@ If the port doesn't appear, install the FTDI VCP driver from
 
 ---
 
-## Quick start (60 seconds)
+## Easiest path — desktop GUI
+
+Don't want to learn shell commands? After installing, just run:
+
+```bash
+swrfid-gui
+```
+
+This opens a small cross-platform window (Linux / Windows / macOS) where you can:
+
+- **Auto-detect** the reader and **connect with one click**
+- Run a **one-shot inventory** or **live-listen** for tags
+- Adjust **region, RF power, and work mode** with sliders / dropdowns
+- Safely **re-program a tag's EPC** (with a confirmation dialog and read-back verification)
+- See live **tag counts, antenna numbers, and RSSI** in a sortable table
+
+The GUI uses `tkinter`, which ships with the official Python installer on
+Windows and macOS. On Linux distros that strip it out, install once with:
+
+```bash
+sudo apt install python3-tk            # Debian / Ubuntu / Mint / Pop / Raspbian
+sudo dnf install python3-tkinter       # Fedora / RHEL
+```
+
+Everything below is for users who prefer scripting / automation. The GUI
+talks to the same protocol module as the CLI and Python API.
+
+---
+
+## Quick start — command line (60 seconds)
 
 ```bash
 # 1. Install
