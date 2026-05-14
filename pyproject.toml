@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "swrfid"
+version = "0.1.0"
+description = "Pure-Python driver for SW family UHF RFID readers (YanPoDo RU5100/5300/5500)"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "Jasmin Tinjak"}]
+requires-python = ">=3.8"
+dependencies = ["pyserial>=3.5"]
+keywords = ["rfid", "uhf", "epc-gen2", "yanpodo", "ru5305", "ru5300", "ru5500", "ru5100", "ftdi"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Hardware",
+    "Topic :: System :: Hardware :: Hardware Drivers",
+    "Topic :: Communications",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+]
+
+[project.urls]
+Homepage = "https://github.com/jasoisjaso/swrfid"
+Repository = "https://github.com/jasoisjaso/swrfid"
+Issues = "https://github.com/jasoisjaso/swrfid/issues"
+
+[project.scripts]
+swrfid = "swrfid.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["swrfid*"]
+
+[tool.setuptools.package-data]
+swrfid = ["py.typed"]
