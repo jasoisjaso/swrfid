@@ -64,6 +64,49 @@ class ReaderError(RuntimeError):
     """Raised when the reader doesn't respond or returns a failure status."""
 
 
+class _FilteredCallback:
+    """Wraps a user-supplied active-mode callback with dedup + RSSI filtering.
+
+    A given EPC seen within ``dedup_window`` seconds is suppressed. Reads
+    below ``rssi_min`` are dropped. The internal last-seen map grows
+    unbounded over very long runs in theory, but in practice the EPC space
+    is huge and entries are only kept while they remain within the dedup
+    window — old keys are pruned opportunistically on each call.
+    """
+
+    def __init__(
+        self,
+        user_cb: Callable[[bytes, List[TagEntry]], None],
+        dedup_window: float,
+        rssi_min: int,
+    ) -> None:
+        self.user_cb = user_cb
+        self.dedup_window = float(dedup_window)
+        self.rssi_min = int(rssi_min)
+        self._last_seen: dict = {}
+
+    def __call__(self, dev_sn: bytes, tags: List[TagEntry]) -> None:
+        now = time.monotonic()
+        if self.dedup_window > 0 and self._last_seen:
+            # Prune anything that aged out, so the map doesn't grow forever.
+            cutoff = now - self.dedup_window
+            self._last_seen = {
+                k: v for k, v in self._last_seen.items() if v > cutoff
+            }
+        forwarded: List[TagEntry] = []
+        for t in tags:
+            if t.rssi < self.rssi_min:
+                continue
+            if self.dedup_window > 0:
+                last = self._last_seen.get(t.epc_hex, 0.0)
+                if now - last < self.dedup_window:
+                    continue
+                self._last_seen[t.epc_hex] = now
+            forwarded.append(t)
+        if forwarded:
+            self.user_cb(dev_sn, forwarded)
+
+
 class RFIDReader:
     """High-level pure-Python driver for the RU5305 family.
 
@@ -127,6 +170,21 @@ class RFIDReader:
                 "the 'dialout' group: "
                 "sudo usermod -aG dialout $USER && newgrp dialout"
                 % (self.port, exc)
+            ) from exc
+        except FileNotFoundError as exc:
+            raise ReaderError(
+                "Port %s does not exist: %s. Use `swrfid list-ports` to "
+                "see available devices, or plug in the reader." % (self.port, exc)
+            ) from exc
+        except serial.SerialException as exc:
+            raise ReaderError(
+                "Could not open %s: %s. Check that the cable is plugged in "
+                "and that no other program (vendor SDK, terminal emulator) "
+                "is currently using the port." % (self.port, exc)
+            ) from exc
+        except OSError as exc:
+            raise ReaderError(
+                "OS error opening %s: %s" % (self.port, exc)
             ) from exc
         # Some FTDI bridges drop the first bytes after open; give them a beat.
         time.sleep(0.2)
@@ -277,11 +335,18 @@ class RFIDReader:
             raise ReaderError("short READ_FREQ response: %s" % rsp.data.hex())
         return rsp.data[0], rsp.data[1]
 
-    def set_freq_region(self, region: str) -> None:
+    def set_region(self, region: str) -> None:
+        """Set the frequency region by name (US, EU, CN, KR, AU, JP, ...).
+
+        See :data:`swrfid.protocol.REGION_FREQ` for the full list.
+        """
         n1, n2 = p.REGION_FREQ[region.upper()]
         self.send_command(
             Cmd.SET_FREQ, bytes([n1, n2]), expect_status_ok=True,
         )
+
+    # Alias kept for backward compatibility with v0.1.0 callers.
+    set_freq_region = set_region
 
     # ------------------------------------------------------------------
     # Read control
@@ -348,9 +413,19 @@ class RFIDReader:
     def start_active_listener(
         self,
         callback: Callable[[bytes, List[TagEntry]], None],
+        dedup_window: float = 0.0,
+        rssi_min: int = 0,
     ) -> None:
         """Spawn a daemon thread that reads serial bytes and dispatches
         every ACTIVE_DATA broadcast to ``callback(dev_sn, tags)``.
+
+        Optional in-flight filters (applied before the user callback):
+
+          dedup_window  — seconds. If > 0, a given EPC is only forwarded
+                          once per window. Useful in active mode where the
+                          reader emits the same tag many times per second.
+          rssi_min      — drop tag reads whose RSSI byte is below this
+                          threshold. 0 disables the filter.
 
         ``send_command`` shares the same callback when an active-mode
         broadcast lands while we are awaiting a command response, so the
@@ -358,7 +433,10 @@ class RFIDReader:
         """
         if self._listener_thread is not None and self._listener_thread.is_alive():
             return
-        self._active_cb = callback
+        if dedup_window > 0 or rssi_min > 0:
+            self._active_cb = _FilteredCallback(callback, dedup_window, rssi_min)
+        else:
+            self._active_cb = callback
         self._listener_stop.clear()
         t = threading.Thread(
             target=self._listener_loop, daemon=True,

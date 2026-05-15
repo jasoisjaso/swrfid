@@ -3,8 +3,11 @@ swrfid.cli — command-line interface for the SW RFID driver.
 
 Run with ``python3 -m swrfid`` or via the ``swrfid`` console_script
 installed by pip. Every subcommand maps to one or two documented
-protocol opcodes. Use ``--dry-run`` to print the bytes that would be
-sent without opening the port — handy for testing without hardware.
+protocol opcodes (with the exceptions of ``diagnose``, ``calibrate``,
+``decode-epc``, and ``list-ports`` which are higher-level helpers).
+
+Use ``--dry-run`` to print the bytes that would be sent without opening
+the port — handy for testing without hardware.
 """
 
 from __future__ import annotations
@@ -92,7 +95,38 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest='action', required=True)
 
+    # Diagnostics / utilities (no hardware or self-managed)
     sub.add_parser('list-ports', help="Show every serial port the OS sees")
+    sp = sub.add_parser(
+        'diagnose',
+        help="Run the why-isn't-this-working checklist against the reader",
+    )
+    sp.add_argument('--color', action='store_true',
+                    help="ANSI-colorise output even when stdout isn't a TTY")
+    sp = sub.add_parser(
+        'decode-epc',
+        help="Identify and parse an EPC offline — no hardware needed",
+    )
+    sp.add_argument('epc', type=_hex_bytes,
+                    help="EPC as hex bytes (e.g. 30340789...)")
+
+    sp = sub.add_parser(
+        'calibrate',
+        help="Sweep RF power against a reference tag and report the curve",
+    )
+    sp.add_argument('--tag', type=_hex_bytes, required=True,
+                    help="EPC hex of the reference tag (12 bytes / 24 hex chars)")
+    sp.add_argument('--cal-min', dest='cal_min', type=_hex_byte, default=0x00,
+                    help="Lowest power byte to test (default 0x00)")
+    sp.add_argument('--cal-max', dest='cal_max', type=_hex_byte, default=None,
+                    help="Highest power byte to test (default: model max 0x1E)")
+    sp.add_argument('--step', type=int, default=1,
+                    help="Power step (default 1)")
+    sp.add_argument('--samples', type=int, default=5,
+                    help="Inventory attempts per power level (default 5)")
+    sp.add_argument('--output', help="Write JSON results to this file")
+
+    # Standard "what does this reader say" queries
     sub.add_parser('info', help="Read system info (softver / hwver / SN)")
     sub.add_parser('check-module', help="Module status")
     sub.add_parser('antenna', help="Antenna presence bitmap")
@@ -116,6 +150,10 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument('--seconds', type=float, default=10.0)
     sp.add_argument('--start-read', action='store_true',
                     help="Send START_READ first; STOP_READ on exit")
+    sp.add_argument('--dedup', type=float, default=0.0,
+                    help="Dedup window in seconds (0 = disabled)")
+    sp.add_argument('--rssi-min', type=_hex_byte, default=0,
+                    help="Drop reads with RSSI byte below this (0 = no filter)")
 
     sp = sub.add_parser('read-tag', help="Read tag memory")
     sp.add_argument('bank', type=_mem_bank)
@@ -157,8 +195,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _build_only(args) -> bytes:
+    """For --dry-run, return the bytes that *would* be sent."""
     a = args.action
-    if a == 'list-ports':
+    if a in ('list-ports', 'diagnose', 'calibrate', 'decode-epc'):
         return b''
     if a == 'info':
         return proto.cmd_read_system_param(args.addr)
@@ -230,8 +269,7 @@ def _print_ports() -> int:
             print("  %s" % d)
     else:
         print()
-        print("No FTDI devices detected — none of the ports above look like "
-              "an SW RFID reader. Use --port <DEVICE> to override.")
+        print("No FTDI devices detected. Use --port <DEVICE> to override.")
     return 0
 
 
@@ -250,6 +288,92 @@ def _resolve_port(args) -> str:
     print("No reader auto-detected. Use --port, or `swrfid list-ports`.",
           file=sys.stderr)
     sys.exit(2)
+
+
+def _run_decode_epc(args) -> int:
+    from . import epc as epc_mod
+    desc = epc_mod.describe(args.epc)
+    print("Scheme:    %s" % desc.scheme)
+    print("Hex (raw): %s" % desc.hex)
+    if desc.sgtin is not None:
+        s = desc.sgtin
+        print()
+        print("--- SGTIN-96 ---")
+        print("Filter value:    %d" % s.filter)
+        print("Partition:       %d" % s.partition)
+        print("Company prefix:  %s" % s.company_prefix)
+        print("Item reference:  %s" % s.item_reference)
+        print("Serial:          %d" % s.serial)
+        print("GTIN-14:         %s" % s.gtin14)
+        print("Pure-identity:   %s" % s.pure_identity_uri)
+        print("Tag URI:         %s" % s.tag_uri)
+    elif desc.scheme == 'unknown':
+        print()
+        print("Unknown header byte 0x%02X." % args.epc[0])
+        print("This is not a standard GS1 EPC. The bytes may be a vendor-")
+        print("specific identifier or a non-EPC-Gen2 tag.")
+    else:
+        print()
+        print("Scheme identified but full parsing for %s isn't built in here."
+              % desc.scheme)
+        print("For complete GS1 EPC TDS support across every scheme, install"
+              " the dedicated library:")
+        print("    pip install epcpy")
+    return 0
+
+
+def _run_diagnose(args) -> int:
+    from . import diagnose
+    checks = diagnose.diagnose(port=args.port)
+    use_color = args.color or sys.stdout.isatty()
+    return diagnose.print_report(checks, color=use_color)
+
+
+def _run_calibrate(reader: RFIDReader, args) -> int:
+    if len(args.tag) != 12:
+        print("Reference tag EPC must be 12 bytes (24 hex chars), got %d."
+              % len(args.tag), file=sys.stderr)
+        return 2
+    from . import calibrate as cal
+    cal_max = (args.cal_max if args.cal_max is not None
+               else max(proto.RF_POWER_MAX.values()))
+
+    def progress(i, total, sample):
+        bar = '#' * sample.successes + '-' * (sample.attempts - sample.successes)
+        print("  [%d/%d] power=0x%02X [%s] %d/%d  rssi=%s" % (
+            i, total, sample.power_byte, bar,
+            sample.successes, sample.attempts,
+            ('%.1f' % sample.avg_rssi) if sample.avg_rssi is not None else '-',
+        ))
+
+    print("Sweeping power 0x%02X to 0x%02X step %d, %d samples per step..."
+          % (args.cal_min, cal_max, args.step, args.samples))
+    print("Keep the reference tag still on the antenna face throughout.")
+    print()
+    result = cal.sweep(
+        reader, args.tag,
+        min_power=args.cal_min, max_power=cal_max,
+        step=args.step, samples_per_power=args.samples,
+        progress=progress,
+    )
+    rec = cal.recommended_power(result)
+    first = cal.first_detectable_power(result)
+    print()
+    print("Reader SN: %s" % result.reader_serial)
+    print("Tag EPC:   %s" % result.tag_epc)
+    if first is not None:
+        print("First detectable power:               0x%02X" % first)
+    if rec is not None:
+        print("Recommended power (100%% reliability): 0x%02X" % rec)
+    else:
+        print("No power level achieved 100%% reliability.")
+        print("The tag may be too far, the antenna mis-oriented, or this reader")
+        print("doesn't have enough headroom at this distance.")
+    if args.output:
+        with open(args.output, 'w') as f:
+            f.write(result.to_json())
+        print("Wrote %s" % args.output)
+    return 0
 
 
 def _run_live(reader: RFIDReader, args) -> int:
@@ -291,9 +415,12 @@ def _run_live(reader: RFIDReader, args) -> int:
     if a == 'inventory':
         tags = reader.inventory()
         print("Tags found: %d" % len(tags))
+        from . import epc as epc_mod
         for t in tags:
-            print("  EPC=%s  ant=%d  rssi=0x%02X"
-                  % (t.epc_hex, t.antenna, t.rssi))
+            desc = epc_mod.describe(t.epc)
+            extra = ' [%s]' % desc.scheme if desc.scheme != 'unknown' else ''
+            print("  EPC=%s%s  ant=%d  rssi=0x%02X"
+                  % (t.epc_hex, extra, t.antenna, t.rssi))
         return 0
     if a == 'listen':
         seen = {}
@@ -304,7 +431,9 @@ def _run_live(reader: RFIDReader, args) -> int:
                 print("  EPC=%s  ant=%d  rssi=0x%02X"
                       % (t.epc_hex, t.antenna, t.rssi))
 
-        reader.start_active_listener(cb)
+        reader.start_active_listener(
+            cb, dedup_window=args.dedup, rssi_min=args.rssi_min,
+        )
         if args.start_read:
             reader.start_read()
         try:
@@ -318,8 +447,8 @@ def _run_live(reader: RFIDReader, args) -> int:
             reader.stop_active_listener()
         print()
         print("Unique EPCs in %.1fs: %d" % (args.seconds, len(seen)))
-        for epc, n in sorted(seen.items(), key=lambda kv: -kv[1]):
-            print("  %s: %d" % (epc, n))
+        for epc_hex, n in sorted(seen.items(), key=lambda kv: -kv[1]):
+            print("  %s: %d" % (epc_hex, n))
         return 0
     if a == 'read-tag':
         data = reader.read_tag(args.bank, args.word_addr, args.word_len,
@@ -383,6 +512,8 @@ def _run_live(reader: RFIDReader, args) -> int:
         print("Response cmd=0x%02X status=0x%02X data=%s"
               % (rsp.cmd, rsp.status, rsp.data.hex().upper()))
         return 0 if rsp.ok() else 1
+    if a == 'calibrate':
+        return _run_calibrate(reader, args)
     print("Unknown action: %s" % a, file=sys.stderr)
     return 2
 
@@ -393,12 +524,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format='%(asctime)s %(name)s %(levelname)s %(message)s',
     )
+
+    # Pure / offline actions — no port needed
     if args.action == 'list-ports':
         return _print_ports()
+    if args.action == 'decode-epc':
+        return _run_decode_epc(args)
+    if args.action == 'diagnose':
+        return _run_diagnose(args)
+
+    # Dry-run path: build the bytes that would be sent, don't open the port
     if args.dry_run:
         frame = _build_only(args)
         if not frame:
-            print("(no frame for this action in dry-run)")
+            print("(this action has no single-frame dry-run; use diagnose / calibrate live)")
             return 0
         print("Would send %d bytes: %s" % (len(frame), frame.hex().upper()))
         print("  Decoded: HEAD=%s LEN=%d ADDR=0x%02X CMD=0x%02X DATA=%s CKSUM=0x%02X"
@@ -408,6 +547,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                  frame[6:-1].hex().upper(),
                  frame[-1]))
         return 0
+
+    # Live: open a real reader
     port = _resolve_port(args)
     try:
         with RFIDReader(port, args.baud, args.addr, args.timeout) as reader:

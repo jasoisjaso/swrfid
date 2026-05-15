@@ -18,6 +18,7 @@ Quick start::
 """
 
 from . import protocol
+from . import epc
 from .protocol import (
     BROADCAST_ADDR, Cmd, FrameError, MemBank, ParamAddr,
     REGION_FREQ, RF_POWER_MAX, Response, ResponseBuffer, Status,
@@ -28,10 +29,15 @@ from .protocol import (
 )
 from .reader import DEFAULT_BAUD, DEFAULT_TIMEOUT, ReaderError, RFIDReader
 from .ports import PortInfo, find_readers, list_serial_ports
+from .epc import (
+    EPCDescription, SGTIN96, describe as describe_epc,
+    identify as identify_epc, parse_sgtin96,
+)
 
-__version__ = "0.1.0"
+__version__ = "0.2.0.dev0"
 
 __all__ = [
+    # Core driver
     "RFIDReader", "ReaderError", "DEFAULT_BAUD", "DEFAULT_TIMEOUT",
     "Cmd", "ParamAddr", "Transport", "WorkMode", "MemBank", "Status",
     "TagEntry", "SystemInfo", "Response", "ResponseBuffer", "FrameError",
@@ -39,7 +45,13 @@ __all__ = [
     "build_frame", "checksum",
     "parse_response", "parse_active_data", "parse_inventory",
     "parse_antenna_status", "parse_system_info",
+    # Port discovery
     "find_readers", "list_serial_ports", "PortInfo",
-    "protocol",
+    # EPC identification + parsing
+    "EPCDescription", "SGTIN96", "describe_epc", "identify_epc",
+    "parse_sgtin96",
+    # Sub-packages
+    "protocol", "epc",
+    # Version
     "__version__",
 ]

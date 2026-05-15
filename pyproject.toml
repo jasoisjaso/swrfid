@@ -4,14 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "swrfid"
-version = "0.1.0"
+version = "0.2.0.dev0"
 description = "Pure-Python driver for SW family UHF RFID readers (YanPoDo RU5100/5300/5500)"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [{name = "Jasmin Tinjak"}]
 requires-python = ">=3.8"
 dependencies = ["pyserial>=3.5"]
-keywords = ["rfid", "uhf", "epc-gen2", "yanpodo", "ru5305", "ru5300", "ru5500", "ru5100", "ftdi"]
+keywords = [
+    "rfid", "uhf", "epc-gen2", "yanpodo", "ru5305", "ru5300", "ru5500",
+    "ru5100", "ftdi", "home-assistant", "mqtt", "access-control",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -36,9 +39,18 @@ Homepage = "https://github.com/jasoisjaso/swrfid"
 Repository = "https://github.com/jasoisjaso/swrfid"
 Issues = "https://github.com/jasoisjaso/swrfid/issues"
 
+[project.optional-dependencies]
+# Bring in paho-mqtt to use the swrfid-mqtt bridge (Home Assistant integration).
+mqtt = ["paho-mqtt>=2.0"]
+# Bring in epcpy for full GS1 EPC TDS parsing (we cover SGTIN-96 ourselves).
+epc = ["epcpy>=0.8"]
+# Convenience: everything optional in one go.
+all = ["paho-mqtt>=2.0", "epcpy>=0.8"]
+
 [project.scripts]
 swrfid = "swrfid.cli:main"
 swrfid-gui = "swrfid.gui:main"
+swrfid-mqtt = "swrfid.mqtt:main"
 
 [tool.setuptools.packages.find]
 include = ["swrfid*"]
